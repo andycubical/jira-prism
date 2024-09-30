@@ -22,10 +22,14 @@
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 
-
+aiohttp = None
+import asyncio
+import json
 import os
+import base64
 import sys
 import re
+import requests
 import importlib
 import logging
 import traceback
@@ -52,7 +56,6 @@ class Prism_Jira_Functions(object):
         if self.isActive():
             extModPath = os.path.join(self.pluginDirectory, "ExternalModules")
             cpModPath = os.path.join(extModPath, "CrossPlatform")
-
             if cpModPath not in sys.path:
                 sys.path.append(cpModPath)
 
@@ -79,6 +82,10 @@ class Prism_Jira_Functions(object):
             self.hasTaskAssignment = True
             self.allowLoginRequest = True
             self.allowUrlRequest = True
+            
+            global aiohttp
+            aiohttp = importlib.import_module("aiohttp")
+
             self.register()
 
     # if returns true, the plugin will be loaded by Prism
@@ -275,7 +282,7 @@ class Prism_Jira_Functions(object):
             {"name": "jira_allowLocalTasks", "label": "Allow local tasks", "type": "QCheckBox", "default": False},
             {"name": "jira_allowAssetCreation", "label": "Allow asset creation", "type": "QCheckBox", "default": False},
             {"name": "jira_allowShotCreation", "label": "Allow shot creation", "type": "QCheckBox", "default": False},
-            {"name": "jira_includePathInComments", "label": "Include full filepath in Kitsu comments", "type": "QCheckBox", "default": True},
+            # {"name": "jira_includePathInComments", "label": "Include full filepath in Kitsu comments", "type": "QCheckBox", "default": True},
             {"name": "jira_useUsername", "label": "Use Jira usernames", "type": "QCheckBox", "default": True},
             # {"name": "jira_syncPlaylists", "label": "Sync playlists", "type": "QCheckBox", "default": False},
             # {"name": "jira_syncDepartments", "label": "Auto Sync Departments", "type": "QCheckBox", "default": False},
@@ -284,6 +291,94 @@ class Prism_Jira_Functions(object):
             # {"name": "jira_createFolders", "label": "Create Asset-/Shot-Folders", "tooltip": "Creates folders in your project folder for all Kitsu assets/shots/tasks.", "type": "QPushButton", "callback": self.prjMng.createLocalFolders},
         ]
         return data
+
+    @err_catcher(name=__name__)
+    def requestAttachments(self, issues, auth=None, allowCache=True):
+        if auth is None:
+            auth = self.prjMng.getAuthorization()
+
+        if not isinstance(issues, list):
+            issues = [issues]
+
+        auth = self.prjMng.getAuthorization()
+        username = auth.get("jira_username")
+        apiToken = auth.get("jira_apiToken")
+        base64_user_pass = base64.b64encode(f"{username}:{apiToken}".encode()).decode()
+        headers = {"Authorization": f"Basic {base64_user_pass}", "Accept": "application/json"}
+        attachments = {}
+
+        def get_tasks(session):
+            tasks = []
+            for issue in issues:
+                url = f"{self.getRemoteUrl()}/rest/api/3/issue/{issue}"
+                tasks.append(session.get(url, headers=headers, ssl=False))
+            return tasks
+
+        async def get_attachments():
+            async with aiohttp.ClientSession() as session:
+                tasks = get_tasks(session)
+                responses = await asyncio.gather(*tasks)
+                issue_datas = []
+                for response in responses:
+                    stat = response.status
+                    if stat == 429:
+                        self.core.popup(f"Too many requests. [Status code {response.status}]")
+                    elif stat != 200:
+                        self.core.popup(f"An error has occured. [Status code {response.status}]")
+                    issue_datas.append(await response.json())
+
+                for i, issue in enumerate(issues):
+                    attachments[issue] = []
+                    if "fields" in issue_datas[i] and "attachment" in issue_datas[i]["fields"]: # If it has an img attachment
+                        for attachment in issue_datas[i]["fields"]["attachment"]:
+                            attachments[issue].append(attachment)
+
+        asyncio.run(get_attachments())
+
+        # Synchronous
+        # for issue in issues:
+        #     url = f"{self.getRemoteUrl()}/rest/api/3/issue/{issue}"
+        #     issue_data = requests.get(url, headers=headers).json()
+        #     attachments[issue] = []
+        #     if "fields" in issue_data and "attachment" in issue_data["fields"]: # If it has an img attachment
+        #         for attachment in issue_data["fields"]["attachment"]:
+        #             attachments[issue].append(attachment)
+
+        # req = requests.get(url, auth=(username, apiToken), timeout=5)
+
+        # reqStatus = req.status_code
+        # if reqStatus == 200:
+        #     self.core.popup(f"Error requesting Jira attachments: {str(reqStatus)}")
+        #     return []
+        # else:
+        #     data = req.json()
+
+        # if not data['fields']['attachment'] :
+        #     attachmentUrl = ""
+
+        return attachments
+
+    @err_catcher(name=__name__)
+    def getThumbnail(self, entity):
+        if entity.get('thumbnail_id', None) is None:
+            return None
+
+        temp_dir = tempfile.gettempdir()
+
+        thumbnail_id = entity['thumbnail_id']
+        base_name = os.path.basename(thumbnail_id)
+        name, extension = os.path.splitext(base_name)
+
+        thumbnail_path = os.path.join(temp_dir, 'prism_jira', name + extension)
+
+        if os.path.exists(thumbnail_path) == False:
+            thumbnail = self.makeDbRequest(self.JIRA, "attachment", thumbnail_id).get()
+            os.makedirs(os.path.dirname(thumbnail_path), exist_ok=True)
+            with open(thumbnail_path, 'wb') as f:
+                f.write(thumbnail)
+                f.close()
+
+        return self.core.media.getPixmapFromPath(thumbnail_path)
 
     @err_catcher(name=__name__)
     def getTaskStatusList(self):
@@ -402,7 +497,6 @@ class Prism_Jira_Functions(object):
 
     @err_catcher(name=__name__)
     def getRemoteUrl(self):
-        # TODO
         url = self.core.getConfig("prjManagement", "jira_url", config="project") or ""
         while url.endswith("/"):
             url = url[:-1]
@@ -450,6 +544,7 @@ class Prism_Jira_Functions(object):
         elif entityType == "task":
             taskId = entity.get("id", "")
             suffix = "/browse/%s" % (entity.get("type", "") + "s", taskId)
+        # TODO - 
         # elif entityType in ["productVersion", "mediaVersion"]:
         #     etype = entity.get("type", "")
         #     commentId = entity.get("id", "")
@@ -476,76 +571,81 @@ class Prism_Jira_Functions(object):
 
     @err_catcher(name=__name__)
     def showTaskStatus(self):
-        return self.core.getConfig("prjManagement", "kitsu_showTaskStatus", config="project", dft=True)
+        return self.core.getConfig("prjManagement", "jira_showTaskStatus", config="project", dft=True)
 
     @err_catcher(name=__name__)
     def showProductStatus(self):
-        return self.core.getConfig("prjManagement", "kitsu_showProductStatus", config="project", dft=True)
+        return self.core.getConfig("prjManagement", "jira_showProductStatus", config="project", dft=True)
 
     @err_catcher(name=__name__)
     def showMediaStatus(self):
-        return self.core.getConfig("prjManagement", "kitsu_showMediaStatus", config="project", dft=True)
+        return self.core.getConfig("prjManagement", "jira_showMediaStatus", config="project", dft=True)
 
     @err_catcher(name=__name__)
     def getAllowNonExistentTaskPublishes(self):
-        return self.core.getConfig("prjManagement", "kitsu_allowNonExistentTaskPublishes", config="project", dft=True)
+        return self.core.getConfig("prjManagement", "jira_allowNonExistentTaskPublishes", config="project", dft=True)
 
     @err_catcher(name=__name__)
     def getAllowLocalTasks(self):
-        return self.core.getConfig("prjManagement", "kitsu_allowLocalTasks", config="project", dft=False)
+        return self.core.getConfig("prjManagement", "jira_allowLocalTasks", config="project", dft=False)
 
     @err_catcher(name=__name__)
     def getAllowAssetCreation(self):
-        return self.core.getConfig("prjManagement", "kitsu_allowAssetCreation", config="project", dft=False)
+        return self.core.getConfig("prjManagement", "jira_allowAssetCreation", config="project", dft=False)
 
     @err_catcher(name=__name__)
     def getAllowShotCreation(self):
-        return self.core.getConfig("prjManagement", "kitsu_allowShotCreation", config="project", dft=False)
+        return self.core.getConfig("prjManagement", "jira_allowShotCreation", config="project", dft=False)
 
     @err_catcher(name=__name__)
     def getIncludePathInComments(self):
-        return self.core.getConfig("prjManagement", "kitsu_includePathInComments", config="project", dft=True)
+        return self.core.getConfig("prjManagement", "jira_includePathInComments", config="project", dft=True)
 
     @err_catcher(name=__name__)
     def getUseKitsuUsername(self):
-        return self.core.getConfig("prjManagement", "kitsu_useUsername", config="project", dft=True)
+        return self.core.getConfig("prjManagement", "jira_useUsername", config="project", dft=True)
 
     @err_catcher(name=__name__)
     def getSyncPlaylists(self):
-        return self.core.getConfig("prjManagement", "kitsu_syncPlaylists", config="project", dft=False)
+        return self.core.getConfig("prjManagement", "jira_syncPlaylists", config="project", dft=False)
 
     @err_catcher(name=__name__)
     def getSyncDepartments(self):
-        return self.core.getConfig("prjManagement", "kitsu_syncDepartments", config="project", dft=False)
+        return self.core.getConfig("prjManagement", "jira_syncDepartments", config="project", dft=False)
 
     @err_catcher(name=__name__)
     def getSyncEntityConnections(self):
-        return self.core.getConfig("prjManagement", "kitsu_syncEntityConnections", config="project", dft=False)
+        return self.core.getConfig("prjManagement", "jira_syncEntityConnections", config="project", dft=False)
 
     @err_catcher(name=__name__)
     def makeJqlQuery(self, query, priority=False):
         cmpnts = tuple(self.getCurrentComponents().split(", "))
         cmpntsSubstring = f'component in {cmpnts}' if len(cmpnts)>1 else f'component = {cmpnts[0]}'
+
         jqlQuery = f'project = {self.getCurrentProjectKey()} AND {cmpntsSubstring} AND {query} ORDER BY {"priority DESC, " if priority else "" }summary ASC'
+
         return jqlQuery
 
     @err_catcher(name=__name__)
-    def makeDbRequest(self, method, args=None, popup=None, allowCache=True, quiet=False):
+    def makeDbRequest(self, module, method, args=None, popup=None, allowCache=True, quiet=False):
         if not isinstance(args, list):
             if args:
                 args = [args]
             else:
                 args = []
 
-        if method not in self.dbCache:
-            self.dbCache[method] = []
+        if module not in self.dbCache:
+            self.dbCache[module] = {}
+
+        if method not in self.dbCache[module]:
+            self.dbCache[module][method] = []
 
         if allowCache:
-            for request in self.dbCache[method]:
+            for request in self.dbCache[module][method]:
                 if request["args"] == args:
                     return request["result"]
         else:
-            self.dbCache[method] = [r for r in self.dbCache[method] if r["args"] != args]
+            self.dbCache[module][method] = [r for r in self.dbCache[module][method] if r["args"] != args]
 
         # if self.requestInProgress:
             # while self.requestInProgress:
@@ -553,15 +653,26 @@ class Prism_Jira_Functions(object):
 
             # return self.makeDbRequest(method, args=args, popup=popup, allowCache=allowCache)
 
-        self.requestInProgress = True
-        logger.debug("make request: %s, %s" % (method, args))
+        #self.requestInProgress = True
+        # self.core.popup("make request: %s, %s, %s" % (module, method, args))
+        
         if popup and not popup.msg and getattr(self, "allowRequestPopups", True):
             popup.show()
 
         try:
-            result = getattr(self.JIRA, method)(*args)
+            if module == requests:
+                # self.core.popup(url)
+                auth = self.prjMng.getAuthorization()
+                username = auth.get("jira_username")
+                apiToken = auth.get("jira_apiToken")
+                base64_user_pass = base64.b64encode(f"{username}:{apiToken}".encode()).decode()
+                kwargs = {"headers": {"Authorization": f"Basic {base64_user_pass}", "Accept": "application/json"},
+                          "timeout": 5}
+                result = getattr(module, method)(*args, **kwargs)
+            else :
+                result = getattr(module, method)(*args)
         except Exception as e:
-            self.requestInProgress = False
+            #self.requestInProgress = False
             # traceback.print_stack()
             logger.debug(method)
             logger.debug(args)
@@ -576,8 +687,8 @@ class Prism_Jira_Functions(object):
             return
 
         data = {"args": args, "result": result}
-        self.dbCache[method].append(data)
-        self.requestInProgress = False
+        self.dbCache[module][method].append(data)
+        # self.requestInProgress = False
         return result
 
     @err_catcher(name=__name__)
@@ -586,12 +697,13 @@ class Prism_Jira_Functions(object):
 
     @err_catcher(name=__name__)
     def isLoggedIn(self):
+        # TODO
         # add check to see if the atlassian site is up
         # if not self.makeDbRequest("client", "host_is_up", quiet=True):
         #     return False
 
         try:
-            user = self.makeDbRequest("myself", quiet=True)
+            user = self.makeDbRequest(self.JIRA, "myself", quiet=True)
         except Exception:
             return False
 
@@ -668,7 +780,7 @@ class Prism_Jira_Functions(object):
 
     @err_catcher(name=__name__)
     def logout(self):
-        self.gazu.log_out()
+        # self.JIRA.
         self.clearDbCache()
 
     @err_catcher(name=__name__)
@@ -676,7 +788,7 @@ class Prism_Jira_Functions(object):
         text = "Querying username - please wait..."
         popup = self.core.waitPopup(self.core, text, hidden=True)
         with popup:
-            user = self.makeDbRequest("myself", popup=popup)
+            user = self.makeDbRequest(self.JIRA, "myself", popup=popup)
 
         if not user:
             return
@@ -883,9 +995,8 @@ class Prism_Jira_Functions(object):
         text = "Querying assets - please wait..."
         popup = self.core.waitPopup(self.core, text, parent=parent, hidden=True)
         with popup:
-            assetsEpicKey = self.core.getConfig("prjManagement", "jira_assetsKey", config="project")
             
-            jiraAssets = self.makeDbRequest("search_issues", [self.makeJqlQuery(f'parent = {assetsEpicKey}'), 0, 0], popup=popup, allowCache=allowCache)
+            jiraAssets = self.makeDbRequest(self.JIRA, "search_issues", [self.makeJqlQuery(f'parent = {self.getAssetEpicKey()}'), 0, 0], popup=popup, allowCache=allowCache)
             
             assets = []
             for jiraAsset in jiraAssets:
@@ -900,11 +1011,18 @@ class Prism_Jira_Functions(object):
                     "asset_path": assetPath,
                     "type": "asset",
                     "description": description,
-                    # "thumbnail_url": jiraAsset.get("image", ""),
+                    "thumbnail_id": None,
                     "id": jiraAsset.key,
                 }
                 assets.append(assetData)
+
+            allAttachments = self.makeDbRequest(self, "requestAttachments", [[asset.get("id") for asset in assets]])
             
+            for i, asset in enumerate(assets) :
+                issueKey = asset.get("id")
+                # for issueAttachments in allAttachments[issueKey]: # Find most recent attachment eventually
+                assets[i]["thumbnail_id"] = allAttachments[issueKey][0].get("id") if len(allAttachments[issueKey]) != 0 else None
+                
             return assets
 
     @err_catcher(name=__name__)
@@ -913,12 +1031,15 @@ class Prism_Jira_Functions(object):
             prjId = self.getCurrentProjectKey()
             if prjId is None:
                 return
-        assetsEpicKey = self.core.getConfig("prjManagement", "jira_assetsKey", config="project")
         assetPath = entity.get("asset_path", "").replace("\\", "/")
-        asset = self.makeDbRequest("search_issues", [self.makeJqlQuery(f'parent = {assetsEpicKey} AND summary ~ "{assetPath}"')], popup=popup, allowCache=True)
+        asset = self.makeDbRequest(self.JIRA, "search_issues", [self.makeJqlQuery(f'parent = {self.getAssetEpicKey()} AND summary ~ "{assetPath}"')], popup=popup, allowCache=True)
 
         if asset:
             return asset[0].key
+
+    @err_catcher(name=__name__)
+    def getAssetEpicKey(self):
+        return self.core.getConfig("prjManagement", "jira_assetsKey", config="project")
 
     @err_catcher(name=__name__)
     def isUsingEpisodes(self):
@@ -990,13 +1111,11 @@ class Prism_Jira_Functions(object):
                         kSeqs += seqs
 
             else:
-                shotEpicKey = self.core.getConfig("prjManagement", "jira_shotsKey", config="project")
-                
-                jiraSequences = self.makeDbRequest("search_issues", [self.makeJqlQuery(f'parent = {shotEpicKey} AND summary ~ "_sequence"'), 0, 0], popup=popup, allowCache=allowCache)
+                jiraSequences = self.makeDbRequest(self.JIRA, "search_issues", [self.makeJqlQuery(f'parent = {self.getShotsEpicKey()} AND summary ~ "_sequence"'), 0, 0], popup=popup, allowCache=allowCache)
 
             shots = []
             for jiraSequence in jiraSequences:
-                jiraShots = self.makeDbRequest("search_issues", [self.makeJqlQuery(f'parent = {shotEpicKey} AND summary ~ "{jiraSequence.get_field("summary")}"'), 0, 0], popup=popup, allowCache=allowCache)
+                jiraShots = self.makeDbRequest(self.JIRA, "search_issues", [self.makeJqlQuery(f'parent = {self.getShotsEpicKey()} AND summary ~ "{jiraSequence.get_field("summary")}"'), 0, 0], popup=popup, allowCache=allowCache)
                 for jiraShot in jiraShots:
                     cutInID = self.core.getConfig("prjManagement", "jira_cutInID", config="project")
                     cutOutID = self.core.getConfig("prjManagement", "jira_cutOutID", config="project")
@@ -1019,7 +1138,7 @@ class Prism_Jira_Functions(object):
                         "id": jiraShot.key,
                         "start": cutIn,
                         "end": cutOut,
-                        # "thumbnail_id": kShot["preview_file_id"],
+                        # "thumbnail_url": self.getThumbnail(jiraShot.key),
                     }
                     shots.append(data)
 
@@ -1040,6 +1159,10 @@ class Prism_Jira_Functions(object):
         return
 
     @err_catcher(name=__name__)
+    def getShotsEpicKey(self):
+        return self.core.getConfig("prjManagement", "jira_shotsKey", config="project")
+
+    @err_catcher(name=__name__)
     def getShotId(self, entity, prjId=None):
         if not prjId:
             prjId = self.getCurrentProjectKey()
@@ -1050,26 +1173,49 @@ class Prism_Jira_Functions(object):
         if shot:
             return shot.get("id")
 
-    @err_catcher(name=__name__)
-    def getThumbnail(self, entity):
-        tmpFile = tempfile.NamedTemporaryFile(suffix=".png")
-        imgPath = tmpFile.name
-        tmpFile.close()
-        if "start_date" in entity:
-            self.makeDbRequest("files", "download_project_avatar", [entity["id"], imgPath], allowCache=False)
-        elif "thumbnail_id" in entity:
-            if not entity["thumbnail_id"]:
-                return
+    # @err_catcher(name=__name__)
+    # def getThumbnail(self, entity):
+    #     tmpFile = tempfile.NamedTemporaryFile(suffix=".png")
+    #     imgPath = tmpFile.name
+    #     tmpFile.close()
+    #     # if "start_date" in entity:
+    #     #     self.makeDbRequest("files", "download_project_avatar", [entity["id"], imgPath], allowCache=False)
+    #     # elif "thumbnail_id" in entity:
+    #     #     if not entity["thumbnail_id"]:
+    #     #         return
+    #     self.requestAttachments(entity["id"])
+    #     #self.makeDbRequest("files", "download_preview_file_thumbnail", [entity["thumbnail_id"], imgPath], allowCache=False)
 
-            self.makeDbRequest("files", "download_preview_file_thumbnail", [entity["thumbnail_id"], imgPath], allowCache=False)
+    #     pixmap = self.core.media.getPixmapFromPath(imgPath)
+    #     try:
+    #         os.remove(imgPath)
+    #     except Exception:
+    #         pass
 
-        pixmap = self.core.media.getPixmapFromPath(imgPath)
-        try:
-            os.remove(imgPath)
-        except Exception:
-            pass
+    #     return pixmap
 
-        return pixmap
+    # @err_catcher(name=__name__)
+    # def getThumbnail(self, entity):
+    #     # if entity.get('thumbnail', None) is None:
+    #     #     return None
+
+    #     temp_dir = tempfile.gettempdir()
+
+    #     issue = self.makeDbRequest("issue", [entity["id"]])
+    #     base_name = os.path.basename(thumbnail_url)
+    #     name, extension = os.path.splitext(base_name)
+
+    #     thumbnail_path = os.path.join(temp_dir, 'prism_jira', name + extension)
+
+    #     if os.path.exists(thumbnail_path) == False:
+    #         thumbnail = self.aq.do_request('GET', entity["thumbnail"], decoding=False)
+
+    #         os.makedirs(os.path.dirname(thumbnail_path), exist_ok=True)
+    #         with open(thumbnail_path, 'wb') as f:
+    #             f.write(thumbnail.content)
+    #             f.close()
+
+    #     return self.core.media.getPixmapFromPath(thumbnail_path)
 
     @err_catcher(name=__name__)
     def getTask(self, entity, dep, task, parent=None):
@@ -1098,11 +1244,11 @@ class Prism_Jira_Functions(object):
             if (entity["type"] == 'asset'):
                 assetId = self.getAssetId(entity, popup=popup)
                 
-                entityLinks = [x for x in self.makeDbRequest("issue", [assetId]).fields.issuelinks if x.type.name=="Entity Link"]
+                entityLinks = [x for x in self.makeDbRequest(self.JIRA, "issue", [assetId]).fields.issuelinks if x.type.name=="Entity Link"]
                 
                 entityTasks = []
                 for i, x in enumerate(entityLinks):
-                    entityTasks.append(self.makeDbRequest("issue", [entityLinks[i].inwardIssue.key]))
+                    entityTasks.append(self.makeDbRequest(self.JIRA, "issue", [entityLinks[i].inwardIssue.key]))
 
                 if len(entityTasks) > 0:
                     for entityTask in entityTasks:
@@ -1121,11 +1267,11 @@ class Prism_Jira_Functions(object):
                 if not shotId:
                     return
 
-                entityLinks = [x for x in self.makeDbRequest("issue", [shotId]).fields.issuelinks if x.type.name=="Entity Link"]
+                entityLinks = [x for x in self.makeDbRequest(self.JIRA, "issue", [shotId]).fields.issuelinks if x.type.name=="Entity Link"]
                 
                 entityTasks = []
                 for i, x in enumerate(entityLinks):
-                    entityTasks.append(self.makeDbRequest("issue", [entityLinks[i].inwardIssue.key]))
+                    entityTasks.append(self.makeDbRequest(self.JIRA, "issue", [entityLinks[i].inwardIssue.key]))
 
                 if len(entityTasks) > 0:
                     for entityTask in entityTasks:
@@ -1305,6 +1451,7 @@ class Prism_Jira_Functions(object):
 
     @err_catcher(name=__name__)
     def publishProduct(self, path, entity, task, version, description="", preview=None, parent=None, origTask=None):
+        # TODO: Publish as attachment to original issue? Do we *need* to publish the file? Can we just make a new issue ready for QA by supes?
         text = "Publishing product. Please wait..."
         popup = self.core.waitPopup(self.core, text, parent=parent)
         with popup:
@@ -1412,6 +1559,7 @@ class Prism_Jira_Functions(object):
 
     @err_catcher(name=__name__)
     def getMediaVersions(self, entity, parent=None, allowCache=True):
+        # TODO : Figure out how to publish media and review media with Jira
         text = "Querying versions - please wait..."
         popup = self.core.waitPopup(self.core, text, parent=parent, hidden=True)
         with popup:
@@ -1449,6 +1597,7 @@ class Prism_Jira_Functions(object):
 
     @err_catcher(name=__name__)
     def getMediaVersion(self, entity, identifierData, versionName):
+        # TODO : Figure out how to publish media and review media with Jira
         versions = self.getMediaVersions(entity) or []
         for version in versions:
             if version.get("identifier") != identifierData["identifier"]:
@@ -1459,12 +1608,14 @@ class Prism_Jira_Functions(object):
 
     @err_catcher(name=__name__)
     def getMediaVersionStatus(self, entity, identifierData, versionName):
+        # TODO : Figure out how to publish media and review media with Jira
         version = self.getMediaVersion(entity, identifierData, versionName)
         if version:
             return version["status"]
 
     @err_catcher(name=__name__)
     def setMediaVersionStatus(self, entity, identifierData, versionName, status, parent=None):
+        # TODO : Figure out how to publish media and review media with Jira
         text = "Setting status - please wait..."
         popup = self.core.waitPopup(self.core, text, parent=parent, hidden=True)
         with popup:
@@ -1512,6 +1663,7 @@ class Prism_Jira_Functions(object):
 
     @err_catcher(name=__name__)
     def publishMedia(self, paths, entity, task, version, description="", uploadPreview=True, parent=None, origTask=None):
+        # TODO : Figure out how to publish media and review media with Jira
         text = "Publishing media. Please wait..."
         popup = self.core.waitPopup(self.core, text, parent=parent)
         with popup:
@@ -1713,7 +1865,9 @@ class Prism_Jira_Functions(object):
             if takId is None:
                 takId = self.getTaskId(entity, prjId, task)
 
-        rmtNotes = self.makeDbRequest("task", "all_comments_for_task", takId, allowCache=allowCache)
+        self.core.popup(takId)
+
+        rmtNotes = self.makeDbRequest("comments", [], allowCache=allowCache)
         if not rmtNotes:
             return []
 
@@ -1945,6 +2099,7 @@ class Prism_Jira_Functions(object):
 
         return data
 
+    # TODO : Revisit
     @err_catcher(name=__name__)
     def getAssignedTasks(self, user=None, allowCache=True):
         prjId = self.getCurrentProjectKey()
@@ -1952,12 +2107,12 @@ class Prism_Jira_Functions(object):
             return
 
         if not user:
-            user = self.makeDbRequest("myself", popup=popup)["displayName"]
+            user = self.makeDbRequest(self.JIRA, "myself")["displayName"]
             if not user:
                 logger.warning("no user specified.")
                 return []
 
-        jiraTasks = list(self.makeDbRequest("search_issues", [self.makeJqlQuery(f"assignee = '{user}' AND type IN (Task, Sub-task)", priority=True), 0, 0], allowCache=allowCache) or [])
+        jiraTasks = list(self.makeDbRequest(self.JIRA, "search_issues", [self.makeJqlQuery(f"assignee = '{user}' AND type IN (Task, Sub-task)", priority=True), 0, 0], allowCache=allowCache) or [])
         tasks = []
         taskStatusList = self.prjMng.getTaskStatusList()
         for jiraTask in jiraTasks:
@@ -1995,11 +2150,11 @@ class Prism_Jira_Functions(object):
                 sdata = {"shot": entityIssue.get_field("summary"), "sequence": sequenceName}
                 path = self.core.entities.getShotName(sdata)
                 entity = {"type": "shot", "shot": entityIssue.get_field("summary"), "sequence": sequenceName}
-            elif categoryIssue.key == self.core.getConfig("prjManagement", "jira_assetsKey", config="project"): # This is an asset task
-                path = "%s/%s" % (entityIssue.get_field("labels")[0], entityIssue.get_field("summary"))
+            elif categoryIssue.key == self.getAssetEpicKey(): # This is an asset task
+                path = "%s/%s" % (entityIssue.get_field("summary").split("_")[1], "_".join(entityIssue.get_field("summary").split("_")[2:]))
                 entity = {"type": "asset", "asset_path": path}
 
-            if jiraTask.get_field("customfield_10015"):
+            if jiraTask.get_field("customfield_10015"): # Start Date
                 date = datetime.strptime(jiraTask.get_field("customfield_10015"), "%Y-%m-%d")
                 if sys.version[0] == "3":
                     startStamp = datetime.timestamp(date)
@@ -2008,7 +2163,7 @@ class Prism_Jira_Functions(object):
             else:
                 startStamp = None
 
-            if jiraTask.get_field("duedate"):
+            if jiraTask.get_field("duedate"): # End Date
                 date = datetime.strptime(jiraTask.get_field("duedate"), "%Y-%m-%d")
                 if sys.version[0] == "3":
                     endStamp = datetime.timestamp(date)
@@ -2054,155 +2209,165 @@ class Prism_Jira_Functions(object):
             tasks.append(data)
 
         return tasks
+    
 
-    @err_catcher(name=__name__)
-    def getPlaylists(self, allowCache=True):
-        prjId = self.getCurrentProjectKey()
-        if prjId is None:
-            return
+    # @err_catcher(name=__name__)
+    # def getPlaylists(self, allowCache=True):
+    #     prjId = self.getCurrentProjectKey()
+    #     if prjId is None:
+    #         return
 
-        playlists = []
-        rmtPlaylists = self.makeDbRequest("playlist", "all_playlists_for_project", {"id": prjId}, allowCache=allowCache) or {}
-        for playlist in rmtPlaylists:
-            playlist = playlist.copy()
-            playlist["content"] = self.getContentOfPlaylist(playlist)
-            playlists.append(playlist)
+    #     playlists = []
+    #     rmtPlaylists = self.makeDbRequest("playlist", "all_playlists_for_project", {"id": prjId}, allowCache=allowCache) or {}
+    #     for playlist in rmtPlaylists:
+    #         playlist = playlist.copy()
+    #         playlist["content"] = self.getContentOfPlaylist(playlist)
+    #         playlists.append(playlist)
         
-        return playlists
+    #     return playlists
 
-    @err_catcher(name=__name__)
-    def getContentOfPlaylist(self, playlist, allowCache=True):
-        playlist = self.makeDbRequest("playlist", "get_playlist", playlist, allowCache=allowCache)
-        content = []
-        usedIds = []
+    # @err_catcher(name=__name__)
+    # def getContentOfPlaylist(self, playlist, allowCache=True):
+    #     playlist = self.makeDbRequest("playlist", "get_playlist", playlist, allowCache=allowCache)
+    #     content = []
+    #     usedIds = []
 
-        prefTaskType = None
-        if playlist["task_type_id"]:
-            prefTaskType = self.getTaskTypeNameByTaskTypeId(playlist["task_type_id"])
+    #     prefTaskType = None
+    #     if playlist["task_type_id"]:
+    #         prefTaskType = self.getTaskTypeNameByTaskTypeId(playlist["task_type_id"])
 
-        for plEntity in (playlist["shots"] or []):
-            if plEntity["entity_id"] in usedIds:
-                continue
+    #     for plEntity in (playlist["shots"] or []):
+    #         if plEntity["entity_id"] in usedIds:
+    #             continue
 
-            if playlist["for_entity"] == "asset":        
-                entity = self.makeDbRequest("asset", "get_asset", plEntity["entity_id"])
-                if not entity.get("asset_type", ""):
-                    assetPath = entity["name"]
-                else:
-                    assetPath = "%s/%s" % (entity["asset_type"], entity["name"])
+    #         if playlist["for_entity"] == "asset":        
+    #             entity = self.makeDbRequest("asset", "get_asset", plEntity["entity_id"])
+    #             if not entity.get("asset_type", ""):
+    #                 assetPath = entity["name"]
+    #             else:
+    #                 assetPath = "%s/%s" % (entity["asset_type"], entity["name"])
 
-                entity["asset_path"] = assetPath
-            else:
-                entity = self.makeDbRequest("shot", "get_shot", plEntity["entity_id"])
-                entity["sequence"] = entity["sequence_name"]
-                entity["shot"] = entity["name"]
+    #             entity["asset_path"] = assetPath
+    #         else:
+    #             entity = self.makeDbRequest("shot", "get_shot", plEntity["entity_id"])
+    #             entity["sequence"] = entity["sequence_name"]
+    #             entity["shot"] = entity["name"]
 
-            entity["type"] = playlist["for_entity"]
-            versions = self.getMediaVersions(entity)
-            if versions:
-                identifier = sorted([v["kitsuTaskName"] for v in versions])
-                if prefTaskType in identifier:
-                    usedIdf = prefTaskType
-                else:
-                    usedIdf = identifier[0]
+    #         entity["type"] = playlist["for_entity"]
+    #         versions = self.getMediaVersions(entity)
+    #         if versions:
+    #             identifier = sorted([v["kitsuTaskName"] for v in versions])
+    #             if prefTaskType in identifier:
+    #                 usedIdf = prefTaskType
+    #             else:
+    #                 usedIdf = identifier[0]
 
-                versions = [v for v in versions if v["kitsuTaskName"] == usedIdf]
-                if versions:
-                    version = sorted(versions, key=lambda x: x["version"])[-1]
-                    version.update(entity)
-                    version["path"] = self.core.mediaProducts.getAovPathFromVersion(version)
-                    if "name" in version:
-                        del version["name"]
+    #             versions = [v for v in versions if v["kitsuTaskName"] == usedIdf]
+    #             if versions:
+    #                 version = sorted(versions, key=lambda x: x["version"])[-1]
+    #                 version.update(entity)
+    #                 version["path"] = self.core.mediaProducts.getAovPathFromVersion(version)
+    #                 if "name" in version:
+    #                     del version["name"]
 
-                    content.append(version)
+    #                 content.append(version)
 
-            usedIds.append(plEntity["entity_id"])
+    #         usedIds.append(plEntity["entity_id"])
 
-        return content
+    #     return content
 
-    @err_catcher(name=__name__)
-    def createPlaylist(self, playlist):
-        prjId = self.getCurrentProjectKey()
-        if prjId is None:
-            return
+    # @err_catcher(name=__name__)
+    # def createPlaylist(self, playlist):
+    #     prjId = self.getCurrentProjectKey()
+    #     if prjId is None:
+    #         return
 
-        self.makeDbRequest("playlist", "new_playlist", [{"id": prjId}, playlist["name"]])
-        self.getPlaylists(allowCache=False)
+    #     # TODO : Figure out how it would be best to do media review / playlists in Jira.
+    #     self.core.popup("Media review and playlists are not supported in Jira.")
+    #     return 
+    #     self.makeDbRequest("playlist", "new_playlist", [{"id": prjId}, playlist["name"]])
+    #     self.getPlaylists(allowCache=False)
 
-    @err_catcher(name=__name__)
-    def getSequence(self, sequenceName, allowCache=True):
-        text = "Querying sequences - please wait..."
-        popup = self.core.waitPopup(self.core, text, parent=None, hidden=True)
-        with popup:
-            prjId = self.getCurrentProjectKey()
-            if prjId is None:
-                return
+    # TODO : What is this used for??
+    # @err_catcher(name=__name__)
+    # def getSequence(self, sequenceName, allowCache=True):
+    #     text = "Querying sequences - please wait..."
+    #     popup = self.core.waitPopup(self.core, text, parent=None, hidden=True)
+    #     with popup:
+    #         prjId = self.getCurrentProjectKey()
+    #         if prjId is None:
+    #             return
 
-            rmtSeq = self.makeDbRequest("shot", "get_sequence_by_name", [{"id": prjId}, sequenceName], popup=popup, allowCache=allowCache)
-            return rmtSeq
+    #         rmtSeq = self.makeDbRequest("search_issues", [self.makeJqlQuery(f'parent = {self.getShotsEpicKey()} AND summary ~ "_sequence"')], popup=popup, allowCache=allowCache)
+    #         return rmtSeq
 
-    @err_catcher(name=__name__)
-    def createSequence(self, sequenceName):
-        prjId = self.getCurrentProjectKey()
-        if prjId is None:
-            return
+    # @err_catcher(name=__name__)
+    # def createSequence(self, sequenceName):
+    #     # TODO
+    #     prjId = self.getCurrentProjectKey()
+    #     if prjId is None:
+    #         return
         
-        sequence = self.makeDbRequest("shot", "new_sequence", [{"id": prjId}, sequenceName], allowCache=False)
-        self.getSequence(sequenceName, allowCache=False)
-        return sequence
+    #     sequence = self.makeDbRequest("shot", "new_sequence", [{"id": prjId}, sequenceName], allowCache=False)
+    #     self.getSequence(sequenceName, allowCache=False)
+    #     return sequence
 
-    @err_catcher(name=__name__)
-    def createShot(self, entity, frameRange=None):
-        prjId = self.getCurrentProjectKey()
-        if prjId is None:
-            return
+    # @err_catcher(name=__name__)
+    # def createShot(self, entity, frameRange=None):
+    #     # TODO
+    #     prjId = self.getCurrentProjectKey()
+    #     if prjId is None:
+    #         return
 
-        sequence = self.getSequence(entity["sequence"])
-        if not sequence:
-            sequence = self.createSequence(entity["sequence"])
+    #     sequence = self.getSequence(entity["sequence"])
+    #     if not sequence:
+    #         sequence = self.createSequence(entity["sequence"])
 
-        args = [{"id": prjId}, sequence, entity["shot"]]
-        if frameRange:
-            args += [None, frameRange[0], frameRange[1]]
+    #     args = [{"id": prjId}, sequence, entity["shot"]]
+    #     if frameRange:
+    #         args += [None, frameRange[0], frameRange[1]]
 
-        self.makeDbRequest("shot", "new_shot", args, allowCache=False)
-        self.getShots(allowCache=False)
-        result = {
-            "entity": entity,
-            "entityPath": self.core.getEntityPath(entity=entity),
-            "existed": False,
-        }
-        logger.debug("shot created: %s" % result)
-        return result
+    #     self.makeDbRequest("shot", "new_shot", args, allowCache=False)
+    #     self.getShots(allowCache=False)
+    #     result = {
+    #         "entity": entity,
+    #         "entityPath": self.core.getEntityPath(entity=entity),
+    #         "existed": False,
+    #     }
+    #     logger.debug("shot created: %s" % result)
+    #     return result
 
-    @err_catcher(name=__name__)
-    def createAsset(self, entity):
-        prjId = self.getCurrentProjectKey()
-        if prjId is None:
-            return
+    # @err_catcher(name=__name__)
+    # def createAsset(self, entity):
+    #     # TODO
 
-        assetTypeName = os.path.dirname(entity["asset_path"])
-        assetType = self.makeDbRequest("asset", "get_asset_type_by_name", assetTypeName, allowCache=False)
-        if not assetType:
-            msg = "Assettype \"%s\" doesn't exist.\n\nPlease create it in Kitsu before creating an asset with this type." % os.path.dirname(entity["asset_path"])
-            self.core.popup(msg)
-            return
+    #     prjId = self.getCurrentProjectKey()
+    #     if prjId is None:
+    #         return
 
-        args = [{"id": prjId}, assetType, os.path.basename(entity["asset_path"])]
+    #     assetTypeName = os.path.dirname(entity["asset_path"])
+    #     self.core.popup(assetTypeName)
+    #     # assetType = self.makeDbRequest("asset", "get_asset_type_by_name", assetTypeName, allowCache=False)
+    #     # if not assetType:
+    #     #     msg = "Assettype \"%s\" doesn't exist.\n\nPlease create it in Kitsu before creating an asset with this type." % os.path.dirname(entity["asset_path"])
+    #     #     self.core.popup(msg)
+    #     #     return
 
-        try:
-            self.makeDbRequest("asset", "new_asset", args, allowCache=False)
-        except Exception:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            erStr = "ERROR:\n%s" % traceback.format_exc()
-            self.core.popup(erStr, title="Kitsu Asset")
-            return
+    #     args = [{"project": prjId}, assetTypeName, os.path.basename(entity["asset_path"])]
 
-        self.getAssets(allowCache=False)
-        result = {
-            "entity": entity,
-            "entityPath": self.core.getEntityPath(entity=entity),
-            "existed": False,
-        }
-        logger.debug("asset created: %s" % result)
-        return result
+    #     try:
+    #         self.makeDbRequest("create_issue", args, allowCache=False)
+    #     except Exception:
+    #         exc_type, exc_obj, exc_tb = sys.exc_info()
+    #         erStr = "ERROR:\n%s" % traceback.format_exc()
+    #         self.core.popup(erStr, title="Kitsu Asset")
+    #         return
+
+    #     self.getAssets(allowCache=False)
+    #     result = {
+    #         "entity": entity,
+    #         "entityPath": self.core.getEntityPath(entity=entity),
+    #         "existed": False,
+    #     }
+    #     logger.debug("asset created: %s" % result)
+    #     return result
