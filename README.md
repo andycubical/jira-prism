@@ -11,7 +11,8 @@
 - [ ] Media
   - [ ] Media Publishing
   - [ ] Media Statuses
-- [ ] Projects Syncing 
+- [ ] Projects Syncing
+- [ ] Code Cleanup
 
 # Jira <-> Prism Pipeline 2.0 Integration
 
