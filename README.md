@@ -26,6 +26,13 @@ It is being developed by and used in production at ZAMination. https://www.youtu
 Prism expects all Jira issues for the *entire* studio (all shows) to be contained within a single Jira project. This single Jira project is expected to have components, assigned to issues, that Prism then uses to filter out what show an issue is contributing to.  
 > This is obviously a little unintuitive, and may change over time depending on production needs at ZAMination.
 
+Prism expects there to be a paricular hierarchy of issue-types on the Jira project. The structure we use at ZAMination, and recommend users to follow is shown below.
+ 3) Show
+ 2) Entity List
+ 1) Epic
+ 0) Task, Asset, Shot
+-1) Sub-Task
+
 Prism also expects there to be two epics present to be the parent of the assets and shots for a given production. We also recommend creating a new issue-type for shots and assets. Internally, we have one issue-type called "Entity"  
 > <img src="https://github.com/user-attachments/assets/c2913f50-205a-4d65-adfe-b9ef2f4b27aa" width="326"/>
 > <img src="https://github.com/user-attachments/assets/53637e33-df63-469f-bad7-b093ba9f9383" width="300"/>
