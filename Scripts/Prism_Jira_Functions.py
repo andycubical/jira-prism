@@ -271,17 +271,17 @@ class Prism_Jira_Functions(object):
             {"name": "jira_url", "label": "Url", "type": "QLineEdit"},
             {"name": "jira_projectKey", "label": "Project Key", "type": "QLineEdit"},
             {"name": "jira_components", "label": "Components", "type": "QLineEdit"},
-            {"name": "jira_assetsKey", "label": "Assets Epic Key", "type": "QLineEdit"},
-            {"name": "jira_shotsKey", "label": "Shots Epic Key", "type": "QLineEdit"},
+            # {"name": "jira_assetsKey", "label": "Assets Epic Key", "type": "QLineEdit"},
+            # {"name": "jira_shotsKey", "label": "Shots Epic Key", "type": "QLineEdit"},
             {"name": "jira_cutInID", "label": "Cut In Field ID", "type": "QLineEdit"},
             {"name": "jira_cutOutID", "label": "Cut Out Field ID", "type": "QLineEdit"},
             {"name": "jira_showTaskStatus", "label": "Show Task Status", "type": "QCheckBox", "default": True},
-            {"name": "jira_showProductStatus", "label": "Show Product Status", "type": "QCheckBox", "default": True},
-            {"name": "jira_showMediaStatus", "label": "Show Media Status", "type": "QCheckBox", "default": True},
+            # {"name": "jira_showProductStatus", "label": "Show Product Status", "type": "QCheckBox", "default": True},
+            # {"name": "jira_showMediaStatus", "label": "Show Media Status", "type": "QCheckBox", "default": True},
             {"name": "jira_allowNonExistentTaskPublishes", "label": "Allow publishes from non-existent tasks", "type": "QCheckBox", "default": True},
             {"name": "jira_allowLocalTasks", "label": "Allow local tasks", "type": "QCheckBox", "default": False},
-            {"name": "jira_allowAssetCreation", "label": "Allow asset creation", "type": "QCheckBox", "default": False},
-            {"name": "jira_allowShotCreation", "label": "Allow shot creation", "type": "QCheckBox", "default": False},
+            # {"name": "jira_allowAssetCreation", "label": "Allow asset creation", "type": "QCheckBox", "default": False},
+            # {"name": "jira_allowShotCreation", "label": "Allow shot creation", "type": "QCheckBox", "default": False},
             # {"name": "jira_includePathInComments", "label": "Include full filepath in Kitsu comments", "type": "QCheckBox", "default": True},
             {"name": "jira_useUsername", "label": "Use Jira usernames", "type": "QCheckBox", "default": True},
             # {"name": "jira_syncPlaylists", "label": "Sync playlists", "type": "QCheckBox", "default": False},
@@ -995,14 +995,13 @@ class Prism_Jira_Functions(object):
         text = "Querying assets - please wait..."
         popup = self.core.waitPopup(self.core, text, parent=parent, hidden=True)
         with popup:
-            
-            jiraAssets = self.makeDbRequest(self.JIRA, "search_issues", [self.makeJqlQuery(f'parent = {self.getAssetEpicKey()}'), 0, 0], popup=popup, allowCache=allowCache)
+            jiraAssets = self.makeDbRequest(self.JIRA, "search_issues", [self.makeJqlQuery(f'type = Asset'), 0, 0], popup=popup, allowCache=allowCache)
             
             assets = []
             for jiraAsset in jiraAssets:
-                assetName = "_".join(jiraAsset.get_field("summary").split("_")[2:])
+                assetName = re.split(r"\s*-\s*", jiraAsset.get_field("summary"))[-1].replace(" ", "_")
                 
-                assetCategory = jiraAsset.get_field("summary").split("_")[1]
+                assetCategory = re.split(r"\s*-\s*", jiraAsset.get_field("parent").get_field("summary"))[-1].replace(" ", "_")
                 description = jiraAsset.get_field("description").split('\n')[0] if jiraAsset.get_field("description") else "No Description"
                 
                 assetPath = f"{assetCategory}/{assetName}"
@@ -1031,15 +1030,12 @@ class Prism_Jira_Functions(object):
             prjId = self.getCurrentProjectKey()
             if prjId is None:
                 return
-        assetPath = entity.get("asset_path", "").replace("\\", "/")
-        asset = self.makeDbRequest(self.JIRA, "search_issues", [self.makeJqlQuery(f'parent = {self.getAssetEpicKey()} AND summary ~ "{assetPath}"')], popup=popup, allowCache=True)
+        assetPath = entity.get("asset_path", "").replace("\\", "/").split("/")[-1].replace("_", " ")
+
+        asset = [x for x in self.makeDbRequest(self.JIRA, "search_issues", [self.makeJqlQuery(f'type = "Asset"')], popup=popup, allowCache=True) if assetPath in x.get_field("summary")]
 
         if asset:
             return asset[0].key
-
-    @err_catcher(name=__name__)
-    def getAssetEpicKey(self):
-        return self.core.getConfig("prjManagement", "jira_assetsKey", config="project")
 
     @err_catcher(name=__name__)
     def isUsingEpisodes(self):
@@ -1107,15 +1103,14 @@ class Prism_Jira_Functions(object):
                         seqs = self.makeDbRequest("shot", "all_sequences_for_episode", kEpisode, popup=popup, allowCache=allowCache)
                         for seq in seqs:
                             seq["episode"] = kEpisode
-
                         kSeqs += seqs
 
             else:
-                jiraSequences = self.makeDbRequest(self.JIRA, "search_issues", [self.makeJqlQuery(f'parent = {self.getShotsEpicKey()} AND summary ~ "_sequence"'), 0, 0], popup=popup, allowCache=allowCache)
-
+                jiraSequences = [x for x in self.makeDbRequest(self.JIRA, "search_issues", [self.makeJqlQuery(f'type = "Shot"'), 0, 0], popup=popup, allowCache=allowCache) if "sequence" in x.get_field("summary")]
+            
             shots = []
             for jiraSequence in jiraSequences:
-                jiraShots = self.makeDbRequest(self.JIRA, "search_issues", [self.makeJqlQuery(f'parent = {self.getShotsEpicKey()} AND summary ~ "{jiraSequence.get_field("summary")}"'), 0, 0], popup=popup, allowCache=allowCache)
+                jiraShots = [x for x in self.makeDbRequest(self.JIRA, "search_issues", [self.makeJqlQuery(f'type = "Shot"'), 0, 0], popup=popup, allowCache=allowCache) if jiraSequence.get_field("summary").split("_sequence")[0] in x.get_field("summary")]
                 for jiraShot in jiraShots:
                     cutInID = self.core.getConfig("prjManagement", "jira_cutInID", config="project")
                     cutOutID = self.core.getConfig("prjManagement", "jira_cutOutID", config="project")
@@ -1124,16 +1119,16 @@ class Prism_Jira_Functions(object):
                     if cutIn:
                         cutIn = int(cutIn)
                     if cutOut:
-                        cutOut = int(cutOut)                        
+                        cutOut = int(cutOut)
 
                     # if "episode" in kSeq:
                     #     seqName = "%s - %s" % (kSeq["episode"]["name"], kSeq["name"])
                     # else:
-                    seqName = jiraSequence.get_field("summary").split("_sequence")[0]
-
+                    seqName = "_".join(re.split(r"\s*-\s*", jiraSequence.get_field("summary").split("_sequence")[0]))
+                    
                     data = {
                         "type": "shot",
-                        "shot": jiraShot.get_field("summary"),
+                        "shot": "_".join(re.split(r"\s*-\s*", jiraShot.get_field("summary"))),
                         "sequence": seqName,
                         "id": jiraShot.key,
                         "start": cutIn,
@@ -1157,10 +1152,6 @@ class Prism_Jira_Functions(object):
         # msg = 'Could not find shot "%s" in Kitsu.' % self.core.entities.getShotName(entity)
         # self.core.popup(msg)
         return
-
-    @err_catcher(name=__name__)
-    def getShotsEpicKey(self):
-        return self.core.getConfig("prjManagement", "jira_shotsKey", config="project")
 
     @err_catcher(name=__name__)
     def getShotId(self, entity, prjId=None):
@@ -1243,7 +1234,7 @@ class Prism_Jira_Functions(object):
             tasks = []
             if (entity["type"] == 'asset'):
                 assetId = self.getAssetId(entity, popup=popup)
-                
+
                 entityLinks = [x for x in self.makeDbRequest(self.JIRA, "issue", [assetId]).fields.issuelinks if x.type.name=="Entity Link"]
                 
                 entityTasks = []
@@ -2131,10 +2122,8 @@ class Prism_Jira_Functions(object):
                 continue
             else:
                 entityIssue = self.JIRA.issue(entityLinks[0].outwardIssue.key)
-
-            categoryIssue = entityIssue.get_field("parent")
             
-            if categoryIssue.key == self.core.getConfig("prjManagement", "jira_shotsKey", config="project"): # This is a shot task
+            if entityIssue.get_field("issuetype") == "Shot":
                 sequenceLinks = [x for x in entityIssue.fields.issuelinks if x.type.name=="Sequence Link"]
 
                 if "_sequence" in entityIssue.get_field("summary"):
@@ -2146,11 +2135,11 @@ class Prism_Jira_Functions(object):
                         f"Jira shot {entityIssue.get_field('summary')} has more than one (or zero) sequence links. This is illegal behavior! \nPlease report to production ASAP."
                     )
                     continue
-
+                
                 sdata = {"shot": entityIssue.get_field("summary"), "sequence": sequenceName}
                 path = self.core.entities.getShotName(sdata)
                 entity = {"type": "shot", "shot": entityIssue.get_field("summary"), "sequence": sequenceName}
-            elif categoryIssue.key == self.getAssetEpicKey(): # This is an asset task
+            elif entityIssue.get_field("issuetype") == "Asset":
                 path = "%s/%s" % (entityIssue.get_field("summary").split("_")[1], "_".join(entityIssue.get_field("summary").split("_")[2:]))
                 entity = {"type": "asset", "asset_path": path}
 
