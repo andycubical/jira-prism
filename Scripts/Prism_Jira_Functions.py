@@ -335,27 +335,6 @@ class Prism_Jira_Functions(object):
 
         asyncio.run(get_attachments())
 
-        # Synchronous
-        # for issue in issues:
-        #     url = f"{self.getRemoteUrl()}/rest/api/3/issue/{issue}"
-        #     issue_data = requests.get(url, headers=headers).json()
-        #     attachments[issue] = []
-        #     if "fields" in issue_data and "attachment" in issue_data["fields"]: # If it has an img attachment
-        #         for attachment in issue_data["fields"]["attachment"]:
-        #             attachments[issue].append(attachment)
-
-        # req = requests.get(url, auth=(username, apiToken), timeout=5)
-
-        # reqStatus = req.status_code
-        # if reqStatus == 200:
-        #     self.core.popup(f"Error requesting Jira attachments: {str(reqStatus)}")
-        #     return []
-        # else:
-        #     data = req.json()
-
-        # if not data['fields']['attachment'] :
-        #     attachmentUrl = ""
-
         return attachments
 
     @err_catcher(name=__name__)
@@ -1031,62 +1010,73 @@ class Prism_Jira_Functions(object):
             if prjId is None:
                 return
         assetPath = entity.get("asset_path", "").replace("\\", "/").split("/")[-1].replace("_", " ")
-
-        asset = [x for x in self.makeDbRequest(self.JIRA, "search_issues", [self.makeJqlQuery(f'type = "Asset"')], popup=popup, allowCache=True) if assetPath in x.get_field("summary")]
+        asset = [x for x in self.makeDbRequest(self.JIRA, "search_issues", [self.makeJqlQuery(f'type = Asset'), 0, 0], popup=popup, allowCache=True) if assetPath in x.get_field("summary")]
 
         if asset:
             return asset[0].key
 
     @err_catcher(name=__name__)
-    def isUsingEpisodes(self):
-        # TODO
-        # prjId = self.getCurrentProjectKey()
-        # if prjId is None:
-            # return
+    def getEpisodesEnabled(self):
+        text = "Checking episodes enabled - please wait..."
+        popup = self.core.waitPopup(self.core, text, parent=None, hidden=True)
+        with popup:
+            prjId = self.getCurrentProjectId()
+            if prjId is None:
+                return
 
-        # path = "/data/projects/%s" % prjId
-        # projectData = self.makeDbRequest("project", "raw.get", [path]) or {}
-        # useEpisodes = projectData.get("production_type") == "tvshow"
-        return False
+            filters = [
+                ["project", "is", {"type": "Project", "id": prjId}],
+            ]
+            rmtEps = self.makeDbRequest("find", ["Episode", filters, []], popup=popup) or {}
 
-    @err_catcher(name=__name__)
-    def getEpisodeByName(self, name):
-        prjId = self.getCurrentProjectKey()
-        if prjId is None:
-            return
-
-        kEp = self.makeDbRequest("shot", "get_episode_by_name", [prjId, name])
-        if not kEp:
-            msg = 'Could not find episode "%s" in Kitsu.' % name
-            self.core.popup(msg)
-            return
-
-        return kEp
+        return bool(rmtEps)
 
     @err_catcher(name=__name__)
-    def getSequenceByName(self, name):
-        prjId = self.getCurrentProjectKey()
-        if prjId is None:
-            return
+    def getEpisodes(self, parent=None, allowCache=True):
+        shots = self.getShots(parent=parent, allowCache=allowCache)
+        episodes = []
+        for shot in shots:
+            if "episode" not in shot:
+                continue
 
-        episode = None
-        if self.isUsingEpisodes():
-            nameData = name.split(" - ")
-            if len(nameData) != 1:
-                episodeName = nameData[0]
-                episode = self.getEpisodeByName(episodeName)
-                name = nameData[1]
+            if shot["episode"] in [episode["episode"] for episode in episodes]:
+                continue
 
-        kSeq = self.makeDbRequest("shot", "get_sequence_by_name", [prjId, name, episode])
-        if not kSeq:
-            msg = 'Could not find sequence "%s" in Kitsu.' % name
-            self.core.popup(msg)
-            return
+            epData = {
+                "type": "shot",
+                "episode": shot["episode"],
+                "sequence": "_episode",
+                "shot": "_sequence",
+            }
+            episodes.append(epData)
 
-        return kSeq
+        return episodes
 
     @err_catcher(name=__name__)
-    def getShots(self, parent=None, allowCache=True):
+    def getSequences(self, parent=None, allowCache=True, episode=None):
+        shots = self.getShots(parent=parent, allowCache=allowCache, episode=episode)
+        sequences = []
+        for shot in shots:
+            if "sequence" not in shot:
+                continue
+
+            if shot["sequence"] in [sequence["sequence"] for sequence in sequences if not episode or episode == sequence.get("episode")]:
+                continue
+
+            seqData = {
+                "type": "shot",
+                "sequence": shot["sequence"],
+                "shot": "_sequence",
+            }
+            if episode:
+                seqData["episode"] = episode
+
+            sequences.append(seqData)
+
+        return sequences
+
+    @err_catcher(name=__name__)
+    def getShots(self, parent=None, allowCache=True, episode=None, sequence=None):
         text = "Querying shots - please wait..."
         popup = self.core.waitPopup(self.core, text, parent=parent, hidden=True)
         with popup:
@@ -1094,23 +1084,18 @@ class Prism_Jira_Functions(object):
             if prjId is None:
                 return
 
-            jiraSequences = []
-            if self.isUsingEpisodes():
-                # TODO : isUsingEpisodes
-                kEpisodes = self.makeDbRequest("shot", "all_episodes_for_project", prjId, popup=popup, allowCache=allowCache)
-                if kEpisodes:
-                    for kEpisode in kEpisodes:
-                        seqs = self.makeDbRequest("shot", "all_sequences_for_episode", kEpisode, popup=popup, allowCache=allowCache)
-                        for seq in seqs:
-                            seq["episode"] = kEpisode
-                        kSeqs += seqs
+            useEpisodes = self.core.getConfig(
+                "globals",
+                "useEpisodes",
+                config="project",
+            ) or False
 
-            else:
-                jiraSequences = [x for x in self.makeDbRequest(self.JIRA, "search_issues", [self.makeJqlQuery(f'type = "Shot"'), 0, 0], popup=popup, allowCache=allowCache) if "sequence" in x.get_field("summary")]
-            
+            jiraSequences = [x for x in self.makeDbRequest(self.JIRA, "search_issues", [self.makeJqlQuery(f'type = "Shot"'), 0, 0], popup=popup, allowCache=allowCache) if "sequence" in x.get_field("summary")]
             shots = []
+
             for jiraSequence in jiraSequences:
                 jiraShots = [x for x in self.makeDbRequest(self.JIRA, "search_issues", [self.makeJqlQuery(f'type = "Shot"'), 0, 0], popup=popup, allowCache=allowCache) if jiraSequence.get_field("summary").split("_sequence")[0] in x.get_field("summary")]
+                
                 for jiraShot in jiraShots:
                     cutInID = self.core.getConfig("prjManagement", "jira_cutInID", config="project")
                     cutOutID = self.core.getConfig("prjManagement", "jira_cutOutID", config="project")
@@ -1120,21 +1105,30 @@ class Prism_Jira_Functions(object):
                         cutIn = int(cutIn)
                     if cutOut:
                         cutOut = int(cutOut)
-
-                    # if "episode" in kSeq:
-                    #     seqName = "%s - %s" % (kSeq["episode"]["name"], kSeq["name"])
-                    # else:
-                    seqName = "_".join(re.split(r"\s*-\s*", jiraSequence.get_field("summary").split("_sequence")[0]))
+                        
+                    seqName = seqName = "_".join(re.split(r"\s*-\s*", jiraSequence.get_field("summary").split("_sequence")[0])[1:])
+                    if not useEpisodes:
+                        seqName = "_".join(re.split(r"\s*-\s*", jiraSequence.get_field("summary").split("_sequence")[0]))
                     
                     data = {
                         "type": "shot",
-                        "shot": "_".join(re.split(r"\s*-\s*", jiraShot.get_field("summary"))),
+                        "shot": "_".join(re.split(r"\s*-\s*", jiraShot.get_field("summary"))[1:]),
                         "sequence": seqName,
                         "id": jiraShot.key,
                         "start": cutIn,
                         "end": cutOut,
                         # "thumbnail_url": self.getThumbnail(jiraShot.key),
                     }
+
+                    if useEpisodes:
+                        data["episode"] = re.split(r"\s*-\s*", jiraSequence.get_field("summary").split("_sequence")[0])[0]
+
+                    if episode and episode != data.get("episode"):
+                        continue
+
+                    if sequence and sequence != data.get("sequence"):
+                        continue
+
                     shots.append(data)
 
             return shots
@@ -1145,9 +1139,18 @@ class Prism_Jira_Functions(object):
         if shots is None:
             return
 
+        useEpisodes = self.core.getConfig(
+            "globals",
+            "useEpisodes",
+            config="project",
+        ) or False
         for shot in shots:
-            if shot["sequence"] == entity["sequence"] and shot["shot"] == entity["shot"]:
-                return shot
+            if useEpisodes:
+                if shot["episode"] == entity["episode"] and shot["sequence"] == entity["sequence"] and shot["shot"] == entity["shot"]:
+                    return shot
+            else:
+                if shot["sequence"] == entity["sequence"] and shot["shot"] == entity["shot"]:
+                    return shot
 
         # msg = 'Could not find shot "%s" in Kitsu.' % self.core.entities.getShotName(entity)
         # self.core.popup(msg)
@@ -2104,9 +2107,10 @@ class Prism_Jira_Functions(object):
                 return []
 
         jiraTasks = list(self.makeDbRequest(self.JIRA, "search_issues", [self.makeJqlQuery(f"assignee = '{user}' AND type IN (Task, Sub-task)", priority=True), 0, 0], allowCache=allowCache) or [])
-        tasks = []
+        
         taskStatusList = self.prjMng.getTaskStatusList()
-        for jiraTask in jiraTasks:
+
+        async def processTask(jiraTask):
             projCmpnts = self.getCurrentComponents()
             taskCmpnts = jiraTask.get_field("components")
 
@@ -2117,13 +2121,13 @@ class Prism_Jira_Functions(object):
             entityLinks = [x for x in jiraTask.fields.issuelinks if x.type.name=="Entity Link"]
             if len(entityLinks) > 1 :
                 logger.warning(f"Jira task {jiraTask.get_field('summary')} has more than one entity link. This is illegal behavior! \nPlease report to production ASAP.")
-                continue
+                return
             if len(entityLinks) == 0: # Not connected to an entity. Shouldn't be displayed.
-                continue
+                return
             else:
                 entityIssue = self.JIRA.issue(entityLinks[0].outwardIssue.key)
-            
-            if entityIssue.get_field("issuetype") == "Shot":
+
+            if entityIssue.get_field("issuetype").name == "Shot":
                 sequenceLinks = [x for x in entityIssue.fields.issuelinks if x.type.name=="Sequence Link"]
 
                 if "_sequence" in entityIssue.get_field("summary"):
@@ -2134,13 +2138,13 @@ class Prism_Jira_Functions(object):
                     logger.warning(
                         f"Jira shot {entityIssue.get_field('summary')} has more than one (or zero) sequence links. This is illegal behavior! \nPlease report to production ASAP."
                     )
-                    continue
+                    return
                 
                 sdata = {"shot": entityIssue.get_field("summary"), "sequence": sequenceName}
                 path = self.core.entities.getShotName(sdata)
                 entity = {"type": "shot", "shot": entityIssue.get_field("summary"), "sequence": sequenceName}
-            elif entityIssue.get_field("issuetype") == "Asset":
-                path = "%s/%s" % (entityIssue.get_field("summary").split("_")[1], "_".join(entityIssue.get_field("summary").split("_")[2:]))
+            elif entityIssue.get_field("issuetype").name == "Asset":
+                path = "%s/%s" % (re.split(r"\s*-\s*", entityIssue.get_field("parent").get_field("summary"))[-1].replace(" ", "_"), re.split(r"\s*-\s*", entityIssue.get_field("summary"))[-1].replace(" ", "_"))
                 entity = {"type": "asset", "asset_path": path}
 
             if jiraTask.get_field("customfield_10015"): # Start Date
@@ -2195,7 +2199,21 @@ class Prism_Jira_Functions(object):
                 "end_date": endStamp,
                 "id": jiraTask.key,
             }
-            tasks.append(data)
+            return data
+        
+        tasks = []
+        aioTasks = []
+        async def processTasks():
+            async with asyncio.TaskGroup() as tg:
+                for jiraTask in jiraTasks:
+                    aioTask = tg.create_task(processTask(jiraTask))
+                    aioTasks.append(aioTask)
+
+            results = [aioTask.result() for aioTask in aioTasks]
+            for x in results:
+                tasks.append(x)
+
+        # asyncio.run(processTasks())
 
         return tasks
     
