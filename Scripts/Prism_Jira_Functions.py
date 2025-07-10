@@ -107,7 +107,7 @@ class Prism_Jira_Functions(object):
             self.core.registerCallback("pluginLoaded", self.onPluginLoaded, plugin=self.plugin)
             return
 
-        self.core.registerCallback("onWriteNoteWidgetCreated", self.onWriteNoteWidgetCreated, plugin=self.plugin)
+        # self.core.registerCallback("onWriteNoteWidgetCreated", self.onWriteNoteWidgetCreated, plugin=self.plugin)
         self.prjMng.registerManager(self)
         self.core.registerCallback("onProjectCreationSettingsReloaded", self.onProjectCreationSettingsReloaded, plugin=self.plugin)
 
@@ -184,7 +184,7 @@ class Prism_Jira_Functions(object):
         text = "Querying usernames - please wait..."
         popup = self.core.waitPopup(self.core, text, hidden=True)
         with popup:
-            unfilteredUsers = self.makeDbRequest("search_users", ['query="."', 'includeInactive=False'])
+            unfilteredUsers = self.JIRA.search_users(query=".", includeInactive=False)
             users = [user.displayName for user in unfilteredUsers if user.accountType=="atlassian"]
 
         loginName = self.getUsername()
@@ -201,7 +201,7 @@ class Prism_Jira_Functions(object):
         text = "Querying usernames - please wait..."
         popup = self.core.waitPopup(self.core, text, hidden=True)
         with popup:
-            unfilteredUsers = self.makeDbRequest("search_users", ['query="."', 'includeInactive=False'])
+            unfilteredUsers = self.JIRA.search_users(query=".", includeInactive=False)
             jiraUsers = [user.displayName for user in unfilteredUsers if user.accountType=="atlassian"]
 
         users = []
@@ -221,44 +221,44 @@ class Prism_Jira_Functions(object):
         # TODO
         dftStatus = [
             {
-                "name": "Todo",
+                "name": "To Do",
                 "abbreviation": "todo",
                 "color": [95, 98, 106],
                 "tasks": True,
-                "products": True,
-                "media": True,
+                # "products": True,
+                # "media": True,
             },
             {
                 "name": "Work In Progress",
-                "abbreviation": "wip",
-                "color": [50, 115, 220],
+                "abbreviation": "ip",
+                "color": [220, 180, 0],
                 "tasks": True,
-                "products": True,
-                "media": True,
+                # "products": True,
+                # "media": True,
             },
             {
-                "name": "Waiting For Approval",
-                "abbreviation": "wfa",
-                "color": [171, 38, 255],
+                "name": "Review",
+                "abbreviation": "review",
+                "color": [24, 120, 255],
                 "tasks": True,
-                "products": True,
-                "media": True,
-            },
-            {
-                "name": "Retake",
-                "abbreviation": "retake",
-                "color": [255, 56, 96],
-                "tasks": True,
-                "products": True,
-                "media": True,
+                # "products": True,
+                # "media": True,
             },
             {
                 "name": "Done",
                 "abbreviation": "done",
                 "color": [34, 209, 96],
                 "tasks": True,
-                "products": True,
-                "media": True,
+                # "products": True,
+                # "media": True,
+            },
+            {
+                "name": "Cancelled",
+                "abbreviation": "cancel",
+                "color": [0, 0, 0],
+                "tasks": True,
+                # "products": True,
+                # "media": True,
             },
         ]
         return dftStatus
@@ -266,6 +266,7 @@ class Prism_Jira_Functions(object):
     @err_catcher(name=__name__)
     def getProjectSettings(self):
         # TODO
+        dftStatus = self.getDefaultStatus()
         data = [
             {"name": "jira_setup", "label": "Setup...", "tooltip": "Opens a setup window to guide you through the process of connecting your Kitsu project to your Prism project.", "type": "QPushButton", "callback": self.prjMng.openSetupDlg},
             {"name": "jira_url", "label": "Url", "type": "QLineEdit"},
@@ -276,8 +277,8 @@ class Prism_Jira_Functions(object):
             {"name": "jira_cutInID", "label": "Cut In Field ID", "type": "QLineEdit"},
             {"name": "jira_cutOutID", "label": "Cut Out Field ID", "type": "QLineEdit"},
             {"name": "jira_showTaskStatus", "label": "Show Task Status", "type": "QCheckBox", "default": True},
-            # {"name": "jira_showProductStatus", "label": "Show Product Status", "type": "QCheckBox", "default": True},
-            # {"name": "jira_showMediaStatus", "label": "Show Media Status", "type": "QCheckBox", "default": True},
+            {"name": "jira_showProductStatus", "label": "Show Product Status", "type": "QCheckBox", "default": True},
+            {"name": "jira_showMediaStatus", "label": "Show Media Status", "type": "QCheckBox", "default": True},
             {"name": "jira_allowNonExistentTaskPublishes", "label": "Allow publishes from non-existent tasks", "type": "QCheckBox", "default": True},
             {"name": "jira_allowLocalTasks", "label": "Allow local tasks", "type": "QCheckBox", "default": False},
             # {"name": "jira_allowAssetCreation", "label": "Allow asset creation", "type": "QCheckBox", "default": False},
@@ -289,6 +290,7 @@ class Prism_Jira_Functions(object):
             # {"name": "jira_syncDepsNow", "label": "Sync Kitsu settings", "tooltip": "Queries the existing departments in Kitsu and creates the same departments in the Prism project. Also syncs the \"Is Feedback Request\" status.", "type": "QPushButton", "callback": self.syncSettings},
             {"name": "jira_syncEntityConnections", "label": "Auto Sync Asset-Shot connections", "type": "QCheckBox", "default": False},
             # {"name": "jira_createFolders", "label": "Create Asset-/Shot-Folders", "tooltip": "Creates folders in your project folder for all Kitsu assets/shots/tasks.", "type": "QPushButton", "callback": self.prjMng.createLocalFolders},
+            {"name": "jira_status", "label": "Available Status", "type": "status", "default": dftStatus},
         ]
         return data
 
@@ -336,7 +338,7 @@ class Prism_Jira_Functions(object):
         asyncio.run(get_attachments())
 
         return attachments
-
+    
     @err_catcher(name=__name__)
     def getThumbnail(self, entity):
         if entity.get('thumbnail_id', None) is None:
@@ -522,7 +524,8 @@ class Prism_Jira_Functions(object):
             suffix = "/browse/%s" % (entityId)
         elif entityType == "task":
             taskId = entity.get("id", "")
-            suffix = "/browse/%s" % (entity.get("type", "") + "s", taskId)
+            suffix = "/browse/%s" % (taskId)
+
         # TODO - 
         # elif entityType in ["productVersion", "mediaVersion"]:
         #     etype = entity.get("type", "")
@@ -860,11 +863,16 @@ class Prism_Jira_Functions(object):
                 return centities
 
             entityId = self.getShotId(entity)
-            rmtEntities = self.makeDbRequest("asset", "all_assets_for_shot", [{"id": entityId}])
+            breakdownLinks = [x for x in self.makeDbRequest(self.JIRA, "issue", [entityId]).fields.issuelinks if x.type.name=="Breakdown"]
+
+            rmtEntities = []
+            for i, x in enumerate(breakdownLinks):
+                rmtEntities.append(self.makeDbRequest(self.JIRA, "issue", [breakdownLinks[i].inwardIssue.key]))
+
             for rmtEntity in rmtEntities:
                 rmtAssets = self.getAssets()
                 for rmtAsset in rmtAssets:
-                    if rmtAsset["id"] == rmtEntity["id"]:
+                    if rmtAsset["id"] == rmtEntity.key:
                         centities.append(rmtAsset)
 
         return centities
@@ -1090,11 +1098,31 @@ class Prism_Jira_Functions(object):
                 config="project",
             ) or False
 
-            jiraSequences = [x for x in self.makeDbRequest(self.JIRA, "search_issues", [self.makeJqlQuery(f'type = "Shot"'), 0, 0], popup=popup, allowCache=allowCache) if "sequence" in x.get_field("summary")]
-            shots = []
+            allShots = list(
+                self.makeDbRequest(
+                    self.JIRA,
+                    "search_issues",
+                    [self.makeJqlQuery('type = "Shot"'), 0, 0],
+                    popup=popup,
+                    allowCache=allowCache
+                )
+            )
 
+            jiraSequences = []
+            for x in allShots: 
+                par = self.makeDbRequest(
+                    x, 
+                    "get_field", 
+                    ["parent"], 
+                    popup=popup, 
+                    allowCache=allowCache
+                    )
+                if par not in jiraSequences:
+                    jiraSequences.append(par)
+
+            shots = []
             for jiraSequence in jiraSequences:
-                jiraShots = [x for x in self.makeDbRequest(self.JIRA, "search_issues", [self.makeJqlQuery(f'type = "Shot"'), 0, 0], popup=popup, allowCache=allowCache) if jiraSequence.get_field("summary").split("_sequence")[0] in x.get_field("summary")]
+                jiraShots = [x for x in allShots if x.get_field("parent") == jiraSequence]
                 
                 for jiraShot in jiraShots:
                     cutInID = self.core.getConfig("prjManagement", "jira_cutInID", config="project")
@@ -1105,10 +1133,12 @@ class Prism_Jira_Functions(object):
                         cutIn = int(cutIn)
                     if cutOut:
                         cutOut = int(cutOut)
-                        
-                    seqName = seqName = "_".join(re.split(r"\s*-\s*", jiraSequence.get_field("summary").split("_sequence")[0])[1:])
+
+                    tokens = re.split(r"\s*-\s*", jiraSequence.get_field("summary"))
+
+                    seqName = tokens[-1]
                     if not useEpisodes:
-                        seqName = "_".join(re.split(r"\s*-\s*", jiraSequence.get_field("summary").split("_sequence")[0]))
+                        seqName = f"{tokens[0]}_{tokens[-1]}"
                     
                     data = {
                         "type": "shot",
@@ -1283,7 +1313,7 @@ class Prism_Jira_Functions(object):
 
     @err_catcher(name=__name__)
     def getTaskId(self, entity, prjId, taskname):
-        task = self.getTask(entity, None, taskname)
+        task = [x for x in self.getTasksFromEntity(entity) if x["task"] == taskname]
         if task:
             return task.get("id")
 
@@ -1348,6 +1378,7 @@ class Prism_Jira_Functions(object):
     def getProductVersions(self, entity, parent=None, allowCache=True):
         text = "Querying versions - please wait..."
         popup = self.core.waitPopup(self.core, text, parent=parent, hidden=True)
+        return []
         with popup:
             prjId = self.getCurrentProjectKey()
             if prjId is None:
@@ -1554,6 +1585,7 @@ class Prism_Jira_Functions(object):
     @err_catcher(name=__name__)
     def getMediaVersions(self, entity, parent=None, allowCache=True):
         # TODO : Figure out how to publish media and review media with Jira
+        return []
         text = "Querying versions - please wait..."
         popup = self.core.waitPopup(self.core, text, parent=parent, hidden=True)
         with popup:
@@ -1777,68 +1809,68 @@ class Prism_Jira_Functions(object):
             data = {"url": url, "versionName": versionName}
             return data
 
-    @err_catcher(name=__name__)
-    def onWriteNoteWidgetCreated(self, origin):
-        if self.prjMng.curManager != self:
-            return
+    # @err_catcher(name=__name__)
+    # def onWriteNoteWidgetCreated(self, origin):
+    #     if self.prjMng.curManager != self:
+    #         return
 
-        origin.lo_add = QHBoxLayout()
-        origin.b_status = QPushButton()
-        origin.b_status.clicked.connect(lambda: self.onNoteStatusClicked(origin))
-        sizePolicy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        origin.b_addNote.setSizePolicy(sizePolicy)
-        origin.lo_add.addWidget(origin.b_addNote)
-        origin.lo_add.addWidget(origin.b_status)
-        origin.lo_newNote.insertLayout(1, origin.lo_add)
-        statusCode = self.core.getConfig("prjManagement", "kitsu_versionPubStatus", config="project") or "wfa"
-        statusDict = self.makeDbRequest("task", "get_task_status_by_short_name", statusCode)
-        if statusDict:
-            statusDict = statusDict.copy()
-            statusDict["abbreviation"] = statusDict["short_name"]
-            statusDict["color"] = [int(statusDict["color"].lstrip("#")[i:i+2], 16) for i in (0, 2, 4)]
-            self.setNoteStatus(origin, statusDict)
+    #     origin.lo_add = QHBoxLayout()
+    #     origin.b_status = QPushButton()
+    #     origin.b_status.clicked.connect(lambda: self.onNoteStatusClicked(origin))
+    #     sizePolicy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+    #     origin.b_addNote.setSizePolicy(sizePolicy)
+    #     origin.lo_add.addWidget(origin.b_addNote)
+    #     origin.lo_add.addWidget(origin.b_status)
+    #     origin.lo_newNote.insertLayout(1, origin.lo_add)
+    #     statusCode = self.core.getConfig("prjManagement", "kitsu_versionPubStatus", config="project") or "wfa"
+    #     statusDict = self.makeDbRequest("task", "get_task_status_by_short_name", statusCode)
+    #     if statusDict:
+    #         statusDict = statusDict.copy()
+    #         statusDict["abbreviation"] = statusDict["short_name"]
+    #         statusDict["color"] = [int(statusDict["color"].lstrip("#")[i:i+2], 16) for i in (0, 2, 4)]
+    #         self.setNoteStatus(origin, statusDict)
 
-    @err_catcher(name=__name__)
-    def onNoteStatusClicked(self, origin):
-        pos = QCursor.pos()
-        tmenu = QMenu(origin)
-        tmenu.setStyleSheet("QMenu::item#test {background-color: rgb(255,0,0);}")
+    # @err_catcher(name=__name__)
+    # def onNoteStatusClicked(self, origin):
+    #     pos = QCursor.pos()
+    #     tmenu = QMenu(origin)
+    #     tmenu.setStyleSheet("QMenu::item#test {background-color: rgb(255,0,0);}")
 
-        status = self.prjMng.getTaskStatusList()
-        for stat in status:
-            label = stat["abbreviation"].upper()
-            if label == origin.b_status.text():
-                continue
+    #     status = self.prjMng.getTaskStatusList()
+    #     for stat in status:
+    #         label = stat["abbreviation"].upper()
+    #         if label == origin.b_status.text():
+    #             continue
 
-            tAct = QWidgetAction(origin)
-            w_status = QWidget()
-            lo_status = QHBoxLayout(w_status)
-            lo_status.setContentsMargins(9, 3, 9, 3)
-            l_status = QLabel(label)
-            lo_status.addWidget(l_status)
-            tAct.setDefaultWidget(w_status)
-            if stat["color"][0] < 200 or stat["color"][1] < 200 or stat["color"][2] < 200:
-                textColor = "white"
-            else:
-                textColor = "black"
+    #         tAct = QWidgetAction(origin)
+    #         w_status = QWidget()
+    #         lo_status = QHBoxLayout(w_status)
+    #         lo_status.setContentsMargins(9, 3, 9, 3)
+    #         l_status = QLabel(label)
+    #         lo_status.addWidget(l_status)
+    #         tAct.setDefaultWidget(w_status)
+    #         if stat["color"][0] < 200 or stat["color"][1] < 200 or stat["color"][2] < 200:
+    #             textColor = "white"
+    #         else:
+    #             textColor = "black"
 
-            w_status.setStyleSheet("color: %s;background-color: rgb(%s, %s, %s);" % (textColor, stat["color"][0], stat["color"][1], stat["color"][2]))
-            tAct.triggered.connect(lambda x=None, s=stat: self.setNoteStatus(origin, s))
-            tmenu.addAction(tAct)
+    #         w_status.setStyleSheet("color: %s;background-color: rgb(%s, %s, %s);" % (textColor, stat["color"][0], stat["color"][1], stat["color"][2]))
+    #         tAct.triggered.connect(lambda x=None, s=stat: self.setNoteStatus(origin, s))
+    #         tmenu.addAction(tAct)
 
-        tmenu.exec_(pos)
+    #     tmenu.exec_(pos)
 
-    @err_catcher(name=__name__)
-    def setNoteStatus(self, origin, status):
-        label = status["abbreviation"].upper()
-        origin.b_status.setText(label)
-        origin.b_status.setToolTip("Status: %s" % label)
-        if status["color"][0] < 200 or status["color"][1] < 200 or status["color"][2] < 200:
-            textColor = "white"
-        else:
-            textColor = "black"
+    # @err_catcher(name=__name__)
+    # def setNoteStatus(self, origin, status):
+    #     label = status["abbreviation"].upper()
+    #     origin.b_status.setText(label)
+    #     origin.b_status.setToolTip("Status: %s" % label)
+    #     if status["color"][0] < 200 or status["color"][1] < 200 or status["color"][2] < 200:
+    #         textColor = "white"
+    #     else:
+    #         textColor = "black"
 
-        origin.b_status.setStyleSheet("QPushButton { color: %s;background-color: rgb(%s, %s, %s); border: none;}" % (textColor, status["color"][0], status["color"][1], status["color"][2]))
+    #     origin.b_status.setStyleSheet("QPushButton { color: %s;background-color: rgb(%s, %s, %s); border: none;}" % (textColor, status["color"][0], status["color"][1], status["color"][2]))
 
     @err_catcher(name=__name__)
     def getNotes(self, entityType, entity, allowCache=True):
@@ -1861,7 +1893,7 @@ class Prism_Jira_Functions(object):
 
         self.core.popup(takId)
 
-        rmtNotes = self.makeDbRequest("comments", [], allowCache=allowCache)
+        rmtNotes = self.makeDbRequest(self.JIRA, "comments", [takId], allowCache=allowCache)
         if not rmtNotes:
             return []
 
@@ -1872,40 +1904,9 @@ class Prism_Jira_Functions(object):
                 if not vdata or vdata["version"] != entity.get("version", "") or (vdata["task"] != entity.get("identifier", entity.get("product", ""))):
                     continue
 
-            replies = []
-            for reply in rmtNote.get("replies", []):
-                dateStr = reply.get("date", "")
-                if dateStr:
-                    date = datetime.strptime(dateStr, "%Y-%m-%dT%H:%M:%S")
-                    if sys.version[0] == "3":
-                        timestamp = datetime.timestamp(date)
-                    else:
-                        timestamp = ((date - datetime(1970, 1, 1)).total_seconds())
-                else:
-                    timestamp = None
-
-                authorId = reply.get("person_id", {})
-                authorData = self.makeDbRequest("person", "get_person", authorId, allowCache=allowCache)
-                author = "%s %s" % (authorData.get("first_name", "-"), authorData.get("last_name", "-"))
-                data = {
-                    "date": timestamp,
-                    "author": author,
-                    "content": reply.get("text", "-").replace(": ", ":\n"),
-                    "id": reply.get("id", ""),
-                }
-                for attachment in rmtNote.get("attachment_files"):
-                    if os.path.splitext(attachment["name"])[0].replace("note_", "") == data["id"]:
-                        apath = self.core.getTempFilepath(filename="kitsu/note_attachment_%s.jpg" % data["id"])
-                        if not os.path.exists(apath):
-                            authorData = self.makeDbRequest("files", "download_attachment_file", [attachment, apath], allowCache=allowCache)
-
-                        data["attachment_path"] = apath
-
-                replies.append(data)
-
-            dateStr = rmtNote.get("created_at", "")
+            dateStr = rmtNote.created
             if dateStr:
-                date = datetime.strptime(dateStr, "%Y-%m-%dT%H:%M:%S")
+                date = datetime.strptime(dateStr.split(".")[0], "%Y-%m-%dT%H:%M:%S")
                 if sys.version[0] == "3":
                     timestamp = datetime.timestamp(date)
                 else:
@@ -1913,21 +1914,13 @@ class Prism_Jira_Functions(object):
             else:
                 timestamp = None
 
-            authorData = rmtNote.get("person") or {}
-            author = "%s %s" % (authorData.get("first_name", "-"), authorData.get("last_name", "-"))
-            tags = [
-                {
-                    "label": rmtNote["task_status"]["short_name"].upper(),
-                    "color": [int(rmtNote["task_status"]["color"].lstrip("#")[i:i+2], 16) for i in (0, 2, 4)]
-                }
-            ]
+            author = rmtNote.author.displayName
             data = {
                 "date": timestamp,
                 "author": author,
-                "content": rmtNote.get("text", "-").replace(": ", ":\n"),
-                "replies": replies,
-                "id": rmtNote.get("id", ""),
-                "tags": tags
+                "content": rmtNote.body,
+                # "replies": replies,
+                "id": rmtNote.id
             }
             notes.append(data)
 
@@ -1987,46 +1980,46 @@ class Prism_Jira_Functions(object):
             }
             return data
 
-    @err_catcher(name=__name__)
-    def createReply(self, entityType, entity, parentNote, note, origin):
-        prjId = self.getCurrentProjectKey()
-        if prjId is None:
-            return
+    # @err_catcher(name=__name__)
+    # def createReply(self, entityType, entity, parentNote, note, origin):
+    #     prjId = self.getCurrentProjectKey()
+    #     if prjId is None:
+    #         return
 
-        logger.debug("adding reply to Kitsu: %s" % note)
+    #     logger.debug("adding reply to Kitsu: %s" % note)
 
-        if entityType == "task":
-            task = entity.get("task", "")
-        elif entityType == "productVersion":
-            task = entity.get("product", "")
-        elif entityType == "mediaVersion":
-            task = entity.get("identifier", "")
+    #     if entityType == "task":
+    #         task = entity.get("task", "")
+    #     elif entityType == "productVersion":
+    #         task = entity.get("product", "")
+    #     elif entityType == "mediaVersion":
+    #         task = entity.get("identifier", "")
 
-        tasks = self.getTasksFromEntity(entity)
-        for tsk in tasks:
-            if tsk["task"] == task:
-                break
-        else:
-            msg = "Couldn't find matching task in Kitsu. Failed to add reply."
-            self.core.popup(msg)
-            return False
+    #     tasks = self.getTasksFromEntity(entity)
+    #     for tsk in tasks:
+    #         if tsk["task"] == task:
+    #             break
+    #     else:
+    #         msg = "Couldn't find matching task in Kitsu. Failed to add reply."
+    #         self.core.popup(msg)
+    #         return False
 
-        comment = {"id": parentNote.get("id")}
-        result = self.makeDbRequest("task", "add_reply_to_comment", [tsk, comment, note], allowCache=False)
-        if result and result.get("id"):
-            self.makeDbRequest("task", "all_comments_for_task", tsk, allowCache=False)
-            self.getMediaVersions(entity, allowCache=False)
-            data = {
-                "content": note,
-                "author": self.core.username,
-                "date": time.time(),
-                "replies": [],
-                "id": result.get("id"),
-                "entityType": entityType,
-                "entity": entity,
-                "parentNote": parentNote,
-            }
-            return data
+    #     comment = {"id": parentNote.get("id")}
+    #     result = self.makeDbRequest("task", "add_reply_to_comment", [tsk, comment, note], allowCache=False)
+    #     if result and result.get("id"):
+    #         self.makeDbRequest("task", "all_comments_for_task", tsk, allowCache=False)
+    #         self.getMediaVersions(entity, allowCache=False)
+    #         data = {
+    #             "content": note,
+    #             "author": self.core.username,
+    #             "date": time.time(),
+    #             "replies": [],
+    #             "id": result.get("id"),
+    #             "entityType": entityType,
+    #             "entity": entity,
+    #             "parentNote": parentNote,
+    #         }
+    #         return data
 
     @err_catcher(name=__name__)
     def addAttachmentToNote(self, entityType, entity, parentNote, attachment):
@@ -2106,45 +2099,46 @@ class Prism_Jira_Functions(object):
                 logger.warning("no user specified.")
                 return []
 
-        jiraTasks = list(self.makeDbRequest(self.JIRA, "search_issues", [self.makeJqlQuery(f"assignee = '{user}' AND type IN (Task, Sub-task)", priority=True), 0, 0], allowCache=allowCache) or [])
-        
-        taskStatusList = self.prjMng.getTaskStatusList()
+        useEpisodes = self.core.getConfig(
+            "globals",
+            "useEpisodes",
+            config="project",
+        ) or False
 
-        async def processTask(jiraTask):
+        jiraTasks = list(self.makeDbRequest(self.JIRA, "search_issues", [self.makeJqlQuery(f"assignee = '{user}' AND type IN (Task, Sub-task) AND status NOT IN (Done, Cancelled)", priority=True), 0, 0], allowCache=allowCache) or [])
+        taskStatusList = self.prjMng.getTaskStatusList()
+        
+        tasks = []
+
+        for jiraTask in jiraTasks:
             projCmpnts = self.getCurrentComponents()
             taskCmpnts = jiraTask.get_field("components")
 
             # If this task is assigned to any component that the project uses
             if not any(str(taskCmpnt) in projCmpnts for taskCmpnt in taskCmpnts):
-                return
+                continue
 
             entityLinks = [x for x in jiraTask.fields.issuelinks if x.type.name=="Entity Link"]
             if len(entityLinks) > 1 :
-                logger.warning(f"Jira task {jiraTask.get_field('summary')} has more than one entity link. This is illegal behavior! \nPlease report to production ASAP.")
-                return
+                logger.warning(f"Jira task {jiraTask.fields.summary} has more than one entity link. This is illegal behavior! \nPlease report to production ASAP.")
+                continue
             if len(entityLinks) == 0: # Not connected to an entity. Shouldn't be displayed.
-                return
+                continue
             else:
-                entityIssue = self.JIRA.issue(entityLinks[0].outwardIssue.key)
+                entityIssue = self.makeDbRequest(self.JIRA, "issue", [entityLinks[0].outwardIssue.key])
 
-            if entityIssue.get_field("issuetype").name == "Shot":
-                sequenceLinks = [x for x in entityIssue.fields.issuelinks if x.type.name=="Sequence Link"]
+            if entityIssue.fields.issuetype.name == "Shot":
+                tokens = re.split(r"\s*-\s*", entityIssue.fields.parent.fields.summary)
 
-                if "_sequence" in entityIssue.get_field("summary"):
-                    sequenceName = entityIssue.get_field("summary").split("_sequence")[0]
-                elif len(sequenceLinks) == 1:
-                    sequenceName = self.JIRA.issue(sequenceLinks[0].outwardIssue.key).get_field("summary")
-                else:
-                    logger.warning(
-                        f"Jira shot {entityIssue.get_field('summary')} has more than one (or zero) sequence links. This is illegal behavior! \nPlease report to production ASAP."
-                    )
-                    return
-                
-                sdata = {"shot": entityIssue.get_field("summary"), "sequence": sequenceName}
+                seqName = tokens[-1]
+                if not useEpisodes:
+                    seqName = f"{tokens[0]}_{tokens[-1]}"
+
+                sdata = {"shot": entityIssue.fields.summary, "sequence": seqName}
                 path = self.core.entities.getShotName(sdata)
-                entity = {"type": "shot", "shot": entityIssue.get_field("summary"), "sequence": sequenceName}
-            elif entityIssue.get_field("issuetype").name == "Asset":
-                path = "%s/%s" % (re.split(r"\s*-\s*", entityIssue.get_field("parent").get_field("summary"))[-1].replace(" ", "_"), re.split(r"\s*-\s*", entityIssue.get_field("summary"))[-1].replace(" ", "_"))
+                entity = {"type": "shot", "shot": entityIssue.fields.summary, "sequence": seqName}
+            elif entityIssue.fields.issuetype.name == "Asset":
+                path = "%s/%s" % (re.split(r"\s*-\s*", entityIssue.fields.parent.fields.summary)[-1].replace(" ", "_"), re.split(r"\s*-\s*", entityIssue.fields.summary)[-1].replace(" ", "_"))
                 entity = {"type": "asset", "asset_path": path}
 
             if jiraTask.get_field("customfield_10015"): # Start Date
@@ -2181,39 +2175,25 @@ class Prism_Jira_Functions(object):
             # if not dep:
             #     continue
 
-            taskName = re.split(r"\s*-\s*", jiraTask.get_field("summary"))[-1]
+            taskName = "_".join(re.split(" ", re.split(r"\s*-\s*", jiraTask.get_field("summary"))[-1]))
 
             if len(jiraTask.get_field("labels")) != 0:
-                dep = jiraTask.get_field("labels")[0]
+                dept = jiraTask.get_field("labels")[0]
             else:
                 logger.warning(f"Jira task {jiraTask.get_field('summary')} does not have a department label set. \nsPlease report this to production ASAP!")
-                dep = "MISSING"
+                dept = "MISSING"
 
             data = {
                 "name": taskName,
                 "entity": entity,
                 "path": path,
-                "department": dep,
+                "department": dept,
                 "status": status,
                 "start_date": startStamp,
                 "end_date": endStamp,
                 "id": jiraTask.key,
             }
-            return data
-        
-        tasks = []
-        aioTasks = []
-        async def processTasks():
-            async with asyncio.TaskGroup() as tg:
-                for jiraTask in jiraTasks:
-                    aioTask = tg.create_task(processTask(jiraTask))
-                    aioTasks.append(aioTask)
-
-            results = [aioTask.result() for aioTask in aioTasks]
-            for x in results:
-                tasks.append(x)
-
-        # asyncio.run(processTasks())
+            tasks.append(data)
 
         return tasks
     
