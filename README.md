@@ -1,3 +1,7 @@
+# Initialization
+
+Rename the root folder of this repository to `Jira`.
+
 # WIP
 - [x] Asset and Shot Syncing
 - [ ] Tasks
